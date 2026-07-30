@@ -106,7 +106,7 @@ def health_badge(rul):
 # ── Sidebar ───────────────────────────────────────────────────────────────────
 with st.sidebar:
     st.title("🔋 Battery RUL Predictor")
-    st.caption("NASA Battery Prognostics Dataset")
+    st.caption("GAIL Battery Prognostics Dataset")
     st.divider()
     st.subheader("Upload .mat Files")
     uploaded_files = st.file_uploader(
@@ -122,7 +122,7 @@ with st.sidebar:
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 st.title("🔋 Li-ion Battery Remaining Useful Life Predictor")
-st.markdown("*Random Forest model trained on NASA Battery Prognostics dataset*")
+st.markdown("*Random Forest model trained on GAIL Battery Prognostics dataset*")
 st.divider()
 
 if not uploaded_files:
