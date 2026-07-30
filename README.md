@@ -41,7 +41,7 @@ pip install -r requirements.txt
 ```
 
 ### 2. Add data
-Place the four `.mat` files from the NASA dataset into the `data/` folder:
+Place the four `.mat` files from the GAIL dataset into the `data/` folder:
 ```
 data/B0005.mat
 data/B0006.mat
