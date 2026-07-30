@@ -1,6 +1,6 @@
 # Battery RUL Predictor
 
-Predicts the **Remaining Useful Life (RUL)** of Li-ion batteries using a Random Forest model trained on NASA's Battery Prognostics dataset.
+Predicts the **Remaining Useful Life (RUL)** of Li-ion batteries using a Random Forest model trained on GAIL's Battery Prognostics dataset.
 
 ---
 
