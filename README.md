@@ -8,7 +8,6 @@ Predicts the **Remaining Useful Life (RUL)** of Li-ion batteries using a Random 
 
 | Item | Detail |
 |---|---|
-| Dataset | NASA Battery Prognostics — 4 batteries (B0005–B0018) |
 | Task | Predict RUL (cycles remaining before End-of-Life) |
 | Model | Random Forest Regressor (200 estimators) |
 | Validation | Leave-One-Battery-Out (LOBO) cross-validation |
