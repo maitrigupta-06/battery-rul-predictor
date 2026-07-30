@@ -8,7 +8,6 @@ import io
 import numpy as np
 import pandas as pd
 import scipy.io as sio
-import joblib
 import streamlit as st
 import plotly.graph_objects as go
 from sklearn.ensemble import RandomForestRegressor
@@ -25,13 +24,13 @@ st.set_page_config(
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 EOL_CAPACITY = 1.4
-RATED_CAP    = 2.0
 BATTERY_IDS  = ["B0005", "B0006", "B0007", "B0018"]
 FEATURES     = [
     "cycle_num", "mean_voltage", "min_voltage",
     "std_voltage", "max_temp", "mean_temp", "discharge_duration",
 ]
 COLORS = ["#2563eb", "#16a34a", "#dc2626", "#d97706"]
+
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 def extract_features(mat_bytes: bytes, batt_id: str) -> pd.DataFrame:
@@ -60,25 +59,20 @@ def extract_features(mat_bytes: bytes, batt_id: str) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-@st.cache_resource
-def train_model(dfs: tuple) -> tuple:
-    """Train RF on all uploaded batteries combined; cache so it only runs once."""
-    df     = pd.concat(dfs, ignore_index=True)
+def fit_model(df: pd.DataFrame):
     scaler = StandardScaler()
     X      = scaler.fit_transform(df[FEATURES].values)
-    y      = df["rul_true"].values
     rf     = RandomForestRegressor(n_estimators=200, random_state=42, n_jobs=-1)
-    rf.fit(X, y)
-    return rf, scaler, df
+    rf.fit(X, df["rul_true"].values)
+    return rf, scaler
 
 
 def lobo_metrics(df: pd.DataFrame):
-    """Run LOBO cross-val and return per-battery results."""
     results = []
     for test_b in df["battery"].unique():
-        tr = df[df["battery"] != test_b]
-        te = df[df["battery"] == test_b]
-        sc = StandardScaler()
+        tr  = df[df["battery"] != test_b]
+        te  = df[df["battery"] == test_b]
+        sc  = StandardScaler()
         Xtr = sc.fit_transform(tr[FEATURES].values)
         Xte = sc.transform(te[FEATURES].values)
         rf  = RandomForestRegressor(n_estimators=200, random_state=42, n_jobs=-1)
@@ -90,9 +84,6 @@ def lobo_metrics(df: pd.DataFrame):
             "MAE"    : round(mean_absolute_error(true, pred), 2),
             "RMSE"   : round(mean_squared_error(true, pred) ** 0.5, 2),
             "R²"     : round(r2_score(true, pred), 3),
-            "preds"  : pred,
-            "true"   : true,
-            "cycles" : te["cycle_num"].values,
         })
     return results
 
@@ -127,42 +118,7 @@ st.divider()
 
 if not uploaded_files:
     st.info("👈 Upload one or more `.mat` files from the sidebar to begin.")
-
-    # Show manual prediction even without data
-    st.subheader("🎛️ Manual Single-Cycle Prediction")
-    st.caption("Enter discharge cycle measurements to get an instant RUL estimate (uses pre-set model weights).")
-
-    col1, col2 = st.columns(2)
-    with col1:
-        cycle_num    = st.number_input("Cycle Number",            min_value=1,    max_value=500,  value=80)
-        mean_voltage = st.number_input("Mean Voltage (V)",        min_value=2.5,  max_value=4.5,  value=3.52, step=0.01)
-        min_voltage  = st.number_input("Min Voltage (V)",         min_value=2.0,  max_value=4.5,  value=2.68, step=0.01)
-        std_voltage  = st.number_input("Voltage Std Dev (V)",     min_value=0.0,  max_value=1.0,  value=0.23, step=0.01)
-    with col2:
-        max_temp  = st.number_input("Max Temperature (°C)",       min_value=20.0, max_value=60.0, value=38.5, step=0.5)
-        mean_temp = st.number_input("Mean Temperature (°C)",      min_value=15.0, max_value=55.0, value=32.0, step=0.5)
-        duration  = st.number_input("Discharge Duration (sec)",   min_value=500,  max_value=8000, value=3580, step=10)
-
-    if st.button("🔮 Predict RUL", type="primary"):
-        st.warning("No .mat files uploaded — prediction uses approximate weights. Upload files for a fully trained model.")
-        # Approximate weights derived from training
-        approx_rul = max(0, int(200 * mean_voltage / 3.6 - cycle_num * 0.85 + duration / 60))
-        col_g, col_m = st.columns([1, 2])
-        with col_g:
-            st.metric("Predicted RUL", f"~{approx_rul} cycles", delta=health_badge(approx_rul))
-        with col_m:
-            fig = go.Figure(go.Indicator(
-                mode="gauge+number", value=approx_rul,
-                title={"text": "RUL (cycles)"},
-                gauge={"axis": {"range": [0, 170]}, "bar": {"color": "#2563eb"},
-                       "steps": [{"range": [0, 20], "color": "#fee2e2"},
-                                  {"range": [20, 60], "color": "#fef9c3"},
-                                  {"range": [60, 170], "color": "#dcfce7"}]},
-            ))
-            fig.update_layout(height=220, margin=dict(t=40, b=10, l=10, r=10))
-            st.plotly_chart(fig, use_container_width=True)
     st.stop()
-
 
 # ── Parse uploaded files ──────────────────────────────────────────────────────
 dfs_list, parsed_ids = [], []
@@ -181,15 +137,12 @@ if not dfs_list:
     st.error("No valid battery files found.")
     st.stop()
 
-# Train (cached)
+# ── Train ─────────────────────────────────────────────────────────────────────
+df_all = pd.concat(dfs_list, ignore_index=True)
+
 with st.spinner("Training Random Forest …"):
-    rf, scaler, df_all = train_model(tuple(id(d) for d in dfs_list))
-    df_all = pd.concat(dfs_list, ignore_index=True)
-    scaler2 = StandardScaler()
-    X_all   = scaler2.fit_transform(df_all[FEATURES].values)
-    rf2     = RandomForestRegressor(n_estimators=200, random_state=42, n_jobs=-1)
-    rf2.fit(X_all, df_all["rul_true"].values)
-    df_all["rul_pred"] = rf2.predict(X_all).clip(0)
+    rf, scaler = fit_model(df_all)
+    df_all["rul_pred"] = rf.predict(scaler.transform(df_all[FEATURES].values)).clip(0)
 
 st.success(f"✅ Trained on {len(df_all)} discharge cycles from: {', '.join(parsed_ids)}")
 
@@ -216,10 +169,9 @@ with tab1:
 
     cols = st.columns(len(parsed_ids))
     for col_ui, batt in zip(cols, parsed_ids):
-        bdf = df_all[df_all["battery"] == batt]
+        bdf  = df_all[df_all["battery"] == batt]
         fade = ((bdf["capacity"].iloc[0] - bdf["capacity"].iloc[-1]) / bdf["capacity"].iloc[0]) * 100
-        col_ui.metric(batt, f"{bdf['capacity'].iloc[-1]:.3f} Ahr",
-                      delta=f"-{fade:.1f}% fade")
+        col_ui.metric(batt, f"{bdf['capacity'].iloc[-1]:.3f} Ahr", delta=f"-{fade:.1f}% fade")
 
 # ── Tab 2: RUL predictions ────────────────────────────────────────────────────
 with tab2:
@@ -239,12 +191,9 @@ with tab2:
     st.plotly_chart(fig2, use_container_width=True)
 
     c1, c2, c3 = st.columns(3)
-    mae  = mean_absolute_error(bdf["rul_true"], bdf["rul_pred"])
-    rmse = mean_squared_error(bdf["rul_true"], bdf["rul_pred"]) ** 0.5
-    r2   = r2_score(bdf["rul_true"], bdf["rul_pred"])
-    c1.metric("MAE",  f"{mae:.1f} cycles")
-    c2.metric("RMSE", f"{rmse:.1f} cycles")
-    c3.metric("R²",   f"{r2:.3f}")
+    c1.metric("MAE",  f"{mean_absolute_error(bdf['rul_true'], bdf['rul_pred']):.1f} cycles")
+    c2.metric("RMSE", f"{mean_squared_error(bdf['rul_true'], bdf['rul_pred'])**0.5:.1f} cycles")
+    c3.metric("R²",   f"{r2_score(bdf['rul_true'], bdf['rul_pred']):.3f}")
 
 # ── Tab 3: Model performance ──────────────────────────────────────────────────
 with tab3:
@@ -254,29 +203,24 @@ with tab3:
     if len(parsed_ids) >= 2:
         with st.spinner("Running LOBO …"):
             lobo_res = lobo_metrics(df_all)
+        st.dataframe(pd.DataFrame(lobo_res), use_container_width=True, hide_index=True)
 
-        perf_df = pd.DataFrame([{k: v for k, v in r.items()
-                                  if k not in ("preds", "true", "cycles")}
-                                 for r in lobo_res])
-        st.dataframe(perf_df, use_container_width=True, hide_index=True)
-
-        # Feature importances
         st.subheader("Feature Importances")
-        fi = dict(zip(FEATURES, rf2.feature_importances_))
-        feat_labels = {
+        fi    = dict(zip(FEATURES, rf.feature_importances_))
+        labels = {
             "mean_voltage": "Mean Voltage", "min_voltage": "Min Voltage",
             "cycle_num": "Cycle No.", "discharge_duration": "Discharge Duration",
             "std_voltage": "Voltage StDev", "mean_temp": "Mean Temperature",
             "max_temp": "Max Temperature",
         }
-        pairs = sorted([(feat_labels[k], v) for k, v in fi.items()], key=lambda x: x[1])
+        pairs = sorted([(labels[k], v) for k, v in fi.items()], key=lambda x: x[1])
         fig_fi = go.Figure(go.Bar(
             x=[v for _, v in pairs], y=[n for n, _ in pairs],
             orientation="h", marker_color="#2563eb",
             text=[f"{v:.1%}" for _, v in pairs], textposition="outside",
         ))
         fig_fi.update_layout(xaxis_title="Importance", template="plotly_white",
-                             height=320, margin=dict(l=140))
+                             height=320, margin=dict(l=150))
         st.plotly_chart(fig_fi, use_container_width=True)
     else:
         st.info("Upload at least 2 battery files to run LOBO cross-validation.")
@@ -288,19 +232,18 @@ with tab4:
 
     col1, col2 = st.columns(2)
     with col1:
-        mn_cycle = st.number_input("Cycle Number",          min_value=1,    max_value=500,  value=80)
-        mn_mv    = st.number_input("Mean Voltage (V)",      min_value=2.5,  max_value=4.5,  value=3.52, step=0.01)
-        mn_minv  = st.number_input("Min Voltage (V)",       min_value=2.0,  max_value=4.5,  value=2.68, step=0.01)
-        mn_stdv  = st.number_input("Voltage Std Dev (V)",   min_value=0.0,  max_value=1.0,  value=0.23, step=0.01)
+        mn_cycle = st.number_input("Cycle Number",           min_value=1,    max_value=500,  value=80)
+        mn_mv    = st.number_input("Mean Voltage (V)",       min_value=2.5,  max_value=4.5,  value=3.52, step=0.01)
+        mn_minv  = st.number_input("Min Voltage (V)",        min_value=2.0,  max_value=4.5,  value=2.68, step=0.01)
+        mn_stdv  = st.number_input("Voltage Std Dev (V)",    min_value=0.0,  max_value=1.0,  value=0.23, step=0.01)
     with col2:
-        mn_mxt   = st.number_input("Max Temperature (°C)",  min_value=20.0, max_value=60.0, value=38.5, step=0.5)
-        mn_mnt   = st.number_input("Mean Temperature (°C)", min_value=15.0, max_value=55.0, value=32.0, step=0.5)
-        mn_dur   = st.number_input("Discharge Duration (s)", min_value=500, max_value=8000, value=3580, step=10)
+        mn_mxt   = st.number_input("Max Temperature (°C)",   min_value=20.0, max_value=60.0, value=38.5, step=0.5)
+        mn_mnt   = st.number_input("Mean Temperature (°C)",  min_value=15.0, max_value=55.0, value=32.0, step=0.5)
+        mn_dur   = st.number_input("Discharge Duration (s)", min_value=500,  max_value=8000, value=3580, step=10)
 
     if st.button("🔮 Predict RUL", type="primary"):
         X_in  = np.array([[mn_cycle, mn_mv, mn_minv, mn_stdv, mn_mxt, mn_mnt, mn_dur]])
-        X_sc  = scaler2.transform(X_in)
-        rul_p = max(0, rf2.predict(X_sc)[0])
+        rul_p = max(0, rf.predict(scaler.transform(X_in))[0])
 
         col_g, col_m = st.columns([1, 2])
         with col_g:
@@ -309,11 +252,14 @@ with tab4:
             fig_g = go.Figure(go.Indicator(
                 mode="gauge+number", value=rul_p,
                 title={"text": "Remaining Useful Life (cycles)"},
-                gauge={"axis": {"range": [0, 170]}, "bar": {"color": "#2563eb"},
-                       "steps": [{"range": [0, 20], "color": "#fee2e2"},
-                                  {"range": [20, 60], "color": "#fef9c3"},
-                                  {"range": [60, 170], "color": "#dcfce7"}],
-                       "threshold": {"line": {"color": "red", "width": 3}, "value": 20}},
+                gauge={
+                    "axis": {"range": [0, 170]},
+                    "bar" : {"color": "#2563eb"},
+                    "steps": [{"range": [0, 20],  "color": "#fee2e2"},
+                               {"range": [20, 60], "color": "#fef9c3"},
+                               {"range": [60, 170],"color": "#dcfce7"}],
+                    "threshold": {"line": {"color": "red", "width": 3}, "value": 20},
+                },
             ))
             fig_g.update_layout(height=240, margin=dict(t=40, b=10, l=10, r=10))
             st.plotly_chart(fig_g, use_container_width=True)
